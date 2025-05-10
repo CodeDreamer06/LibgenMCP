@@ -14,7 +14,7 @@ import { exec } from "child_process";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.11",
+    version: "1.0.12",
 });
 
 // Add a tool to search and download books
@@ -27,9 +27,10 @@ server.tool(
         }).optional().default("pdf").describe("Preferred book format ('PDF' or 'EPUB'). Defaults to 'PDF'."),
         debug: z.boolean().optional().default(false).describe("If true, includes debug information in the response."),
         openFile: z.boolean().optional().default(true).describe("If true, automatically opens the downloaded file using the system's default application."),
+        timeout: z.number().optional().default(60000).describe("Timeout in milliseconds for the download request. Large books may require longer timeouts (default: 60000 = 60 seconds)."),
         bookIndex: z.number().optional().describe("IMPORTANT: The LLM should usually select the most appropriate book automatically based on popularity, relevance, and file size without asking the user. Only present options to the user when genuinely confused about which is the best choice. For English-language queries, prefer English books with the original title that match the search exactly. If provided by the user, selects the book at this index from search results."),
     },
-    async ({ query, format = "pdf", debug = false, openFile = true, bookIndex }) => {
+    async ({ query, format = "pdf", debug = false, openFile = true, timeout = 60000, bookIndex }) => {
         try {
             console.log(`[LibGen MCP] Searching for "${query}" in format: ${format}`);
             
@@ -270,10 +271,14 @@ server.tool(
             
             // STEP 6: Download the file
             console.log(`[LibGen MCP] Downloading file from: ${absoluteDownloadUrl}`);
+            console.log(`[LibGen MCP] Downloading file with timeout of ${timeout}ms...`);
             const fileResponse = await axios({
                 method: 'get',
                 url: absoluteDownloadUrl,
-                responseType: 'arraybuffer'
+                responseType: 'arraybuffer',
+                timeout: timeout,
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity
             });
             
             // Determine file extension from content-type or URL
@@ -338,11 +343,29 @@ server.tool(
             
             // Special handling for common errors
             if (axios.isAxiosError(error)) {
-                if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+                if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
                     return { 
                         content: [{ 
                             type: "text", 
                             text: `Failed to connect to LibGen. The site might be down or inaccessible. (${error.message})` 
+                        }] 
+                    };
+                }
+                
+                if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
+                    return { 
+                        content: [{ 
+                            type: "text", 
+                            text: `The download timed out. This usually happens with very large files. Try again with a longer timeout parameter (e.g., 120000 for 120 seconds) or a different book.` 
+                        }] 
+                    };
+                }
+                
+                if (error.message.includes('maxContentLength') || error.message.includes('maxBodyLength')) {
+                    return { 
+                        content: [{ 
+                            type: "text", 
+                            text: `The file is too large to download. Try a different book or format.` 
                         }] 
                     };
                 }
