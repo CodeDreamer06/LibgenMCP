@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import axios from "axios";
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 import fs from "fs";
 import fse from "fs-extra";
 import os from "os";
