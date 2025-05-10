@@ -50,8 +50,7 @@ Searches LibGen for a specified book and attempts to download it in the preferre
 *   `format` (string, optional): The preferred book format. Accepts 'PDF' or 'EPUB' (case-insensitive). Defaults to 'PDF' if not specified.
     *   Example: `"epub"`
 
-**Example Usage (conceptual, depends on your LLM/client):
-**
+**Example Usage (conceptual, depends on your LLM/client):**
 `LLM, please use the libgen-book-finder to find 'Sapiens by Yuval Noah Harari' and download it as an EPUB.`
 
 This would translate to an MCP tool call like:
