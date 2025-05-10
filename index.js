@@ -9,11 +9,12 @@ import fs from "fs";
 import fse from "fs-extra";
 import os from "os";
 import path from "path";
+import { exec } from "child_process";
 
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.7",
+    version: "1.0.8",
 });
 
 // Add a tool to search and download books
@@ -25,8 +26,9 @@ server.tool(
             message: "Format must be 'PDF' or 'EPUB' (case-insensitive).",
         }).optional().default("pdf").describe("Preferred book format ('PDF' or 'EPUB'). Defaults to 'PDF'."),
         debug: z.boolean().optional().default(false).describe("If true, includes debug information in the response."),
+        openFile: z.boolean().optional().default(true).describe("If true, automatically opens the downloaded file using the system's default application."),
     },
-    async ({ query, format = "pdf", debug = false }) => {
+    async ({ query, format = "pdf", debug = false, openFile = true }) => {
         try {
             console.log(`[LibGen MCP] Searching for "${query}" in format: ${format}`);
             
@@ -294,9 +296,29 @@ server.tool(
             fs.writeFileSync(filePath, Buffer.from(fileResponse.data));
             console.log(`[LibGen MCP] File saved successfully to: ${filePath}`);
             
+            // Open the file if requested
+            let fileOpened = false;
+            if (openFile) {
+                try {
+                    console.log(`[LibGen MCP] Attempting to open file: ${filePath}`);
+                    // Use the 'open' command on macOS to open the file with default application
+                    exec(`open "${filePath}"`, (error) => {
+                        if (error) {
+                            console.error(`[LibGen MCP] Error opening file: ${error.message}`);
+                        }
+                    });
+                    fileOpened = true;
+                    console.log(`[LibGen MCP] File opened successfully.`);
+                } catch (openError) {
+                    console.error(`[LibGen MCP] Failed to open file: ${openError.message}`);
+                }
+            }
+            
             return {
                 content: [
-                    { type: "text", text: `✅ Successfully downloaded "${selectedBook.title}" by ${selectedBook.author} in ${fileExt.toUpperCase()} format.\nSaved to: ${filePath}` }
+                    { type: "text", text: `✅ Successfully downloaded "${selectedBook.title}" by ${selectedBook.author} in ${fileExt.toUpperCase()} format.\n${
+                        fileOpened ? "✓ The file has been opened with your default application." : `Saved to: ${filePath}`
+                    }` }
                 ]
             };
             
