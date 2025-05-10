@@ -14,21 +14,22 @@ import { exec } from "child_process";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.8",
+    version: "1.0.9",
 });
 
 // Add a tool to search and download books
 server.tool(
     "searchAndDownloadBook",
     {
-        query: z.string().min(1).describe("The search query for the book (e.g., title, author, ISBN)."),
+        query: z.string().min(1).describe("The search query for the book. IMPORTANT: This tool is very picky, so enter as few words as possible (just the book title). The search has no fuzzy matching capabilities, so complex queries with author names or other details will likely fail."),
         format: z.string().refine(val => ['pdf', 'epub'].includes(val.toLowerCase()), {
             message: "Format must be 'PDF' or 'EPUB' (case-insensitive).",
         }).optional().default("pdf").describe("Preferred book format ('PDF' or 'EPUB'). Defaults to 'PDF'."),
         debug: z.boolean().optional().default(false).describe("If true, includes debug information in the response."),
         openFile: z.boolean().optional().default(true).describe("If true, automatically opens the downloaded file using the system's default application."),
+        bookIndex: z.number().optional().describe("If provided, selects the book at this index from the search results. If not provided, returns the list of books for selection."),
     },
-    async ({ query, format = "pdf", debug = false, openFile = true }) => {
+    async ({ query, format = "pdf", debug = false, openFile = true, bookIndex }) => {
         try {
             console.log(`[LibGen MCP] Searching for "${query}" in format: ${format}`);
             
@@ -50,79 +51,85 @@ server.tool(
             if (bookRows.length === 0) {
                 const debugInfo = debug ? {
                     searchUrl,
-                    htmlSnippet: $.html().substring(0, 1000) + '...',
-                    message: 'No table rows found matching the selector pattern'
-                } : null;
-                
-                console.log(`[LibGen MCP] No search results found for "${query}"`);
-                return { 
-                    content: [{ 
-                        type: "text", 
-                        text: debug 
-                            ? `No results found for "${query}".\n\nDebug Info: ${JSON.stringify(debugInfo, null, 2)}` 
-                            : `No results found for "${query}".` 
-                    }] 
-                };
+                    html: response.data.substring(0, 500) + '...'
+                } : {};
+                return { content: [{ type: "text", text: `No books found for query "${query}". Try a simpler search term.` }], debugInfo };
             }
             
-            // Get ALL book results to let the LLM choose
+            // Extract book information from the search results
+            console.log(`[LibGen MCP] Found ${bookRows.length} books in search results.`);
             const books = [];
-            bookRows.each((index, row) => {
-                if (index < 5) { // Limit to first 5 books for practical reasons
-                    const $row = $(row);
-                    const id = $row.find('td:nth-child(1)').text().trim();
-                    const author = $row.find('td:nth-child(2)').text().trim();
-                    const titleEl = $row.find('td:nth-child(3) a');
+            bookRows.each((i, row) => {
+                const columns = $(row).find('td');
+                if (columns.length >= 10) { // The table should have at least 10 columns
+                    const id = $(columns[0]).text().trim();
+                    const author = $(columns[1]).text().trim();
+                    const titleEl = $(columns[2]).find('a');
                     const title = titleEl.text().trim();
+                    const publisher = $(columns[3]).text().trim();
+                    const year = $(columns[4]).text().trim();
+                    const pages = $(columns[5]).text().trim();
+                    const language = $(columns[6]).text().trim();
+                    const size = $(columns[7]).text().trim();
+                    const extension = $(columns[8]).text().trim().toLowerCase();
+                    const detailsLink = $(columns[9]).find('a').attr('href');
                     const md5 = titleEl.attr('href')?.match(/md5=([A-F0-9]+)/i)?.[1] || '';
-                    const year = $row.find('td:nth-child(5)').text().trim();
-                    const pages = $row.find('td:nth-child(6)').text().trim();
-                    const language = $row.find('td:nth-child(7)').text().trim();
-                    const size = $row.find('td:nth-child(8)').text().trim();
-                    const extension = $row.find('td:nth-child(9)').text().trim();
                     
-                    if (title && md5) {
+                    if (title && (format === 'any' || extension.includes(format))) {
                         books.push({
                             id,
-                            md5,
-                            title,
                             author,
+                            title,
+                            publisher,
                             year,
                             pages,
                             language,
                             size,
-                            extension
+                            extension,
+                            detailsLink,
+                            md5
                         });
                     }
                 }
             });
             
-            // If debug mode is enabled, return all books for LLM to choose
-            if (debug) {
-                console.log(`[LibGen MCP] Returning ${books.length} book options to LLM for selection`);
-                return {
-                    content: [{
-                        type: "text",
-                        text: `Found ${books.length} books matching "${query}". Please choose one by ID or MD5 hash:\n\n${books.map(b => 
-                            `ID: ${b.id}, MD5: ${b.md5}\nTitle: ${b.title}\nAuthor: ${b.author}, Year: ${b.year}, Format: ${b.extension}, Size: ${b.size}\n`
-                        ).join('\n')}`
-                    }]
-                };
-            }
-            
-            // Otherwise, use the first book automatically
             if (books.length === 0) {
-                console.log(`[LibGen MCP] Could not extract book information from search results`);
-                return { 
-                    content: [{ 
-                        type: "text", 
-                        text: `Found search results for "${query}" but could not extract book information.` 
-                    }] 
+                const debugInfo = debug ? {
+                    searchUrl,
+                    format,
+                    foundRows: bookRows.length,
+                    html: response.data.substring(0, 500) + '...'
+                } : {};
+                return { content: [{ type: "text", text: `No books found in ${format} format for query "${query}". Try a different format or a simpler search term.` }], debugInfo };
+            }
+            
+            // PHASE 1: If no bookIndex is provided, return the list of books for the LLM to choose from
+            if (bookIndex === undefined) {
+                const bookList = books.map((book, index) => (
+                    `${index}: "${book.title}" by ${book.author} (${book.year}, ${book.extension}, ${book.size})`
+                )).join('\n');
+                
+                console.log(`[LibGen MCP] Returning list of ${books.length} books for LLM selection`);
+                return {
+                    content: [
+                        { type: "text", text: `Found ${books.length} books matching "${query}" in ${format} format. Please select a book by specifying the bookIndex parameter:\n\n${bookList}\n\nTo download a specific book, call this tool again with the same query, format, and the bookIndex parameter.` }
+                    ],
+                    books: debug ? books : undefined
                 };
             }
             
-            const selectedBook = books[0];
-            console.log(`[LibGen MCP] Selected book: "${selectedBook.title}" by ${selectedBook.author} (MD5: ${selectedBook.md5})`);
+            // PHASE 2: Download the selected book
+            if (bookIndex < 0 || bookIndex >= books.length) {
+                return { content: [{ type: "text", text: `Invalid bookIndex: ${bookIndex}. Please select a number between 0 and ${books.length - 1}.` }] };
+            }
+            
+            const selectedBook = books[bookIndex];
+            console.log(`[LibGen MCP] Selected book: "${selectedBook.title}" by ${selectedBook.author} (${selectedBook.extension})`);
+            
+            if (!selectedBook.detailsLink) {
+                const debugInfo = debug ? { selectedBook, books } : {};
+                return { content: [{ type: "text", text: `Could not find a details link for the selected book "${selectedBook.title}".` }], debugInfo };
+            }
             
             // STEP 2: Navigate to the book details page using the specific URL pattern from user example
             const bookPageUrl = `https://libgen.is/book/index.php?md5=${selectedBook.md5}`;
