@@ -13,7 +13,7 @@ import path from "path";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.4",
+    version: "1.0.5",
 });
 
 // Add a tool to search and download books
@@ -24,8 +24,9 @@ server.tool(
         format: z.string().refine(val => ['pdf', 'epub'].includes(val.toLowerCase()), {
             message: "Format must be 'PDF' or 'EPUB' (case-insensitive).",
         }).optional().default("pdf").describe("Preferred book format ('PDF' or 'EPUB'). Defaults to 'PDF'."),
+        debug: z.boolean().optional().default(false).describe("If true, includes debug information in the response."),
     },
-    async ({ query, format = "pdf" }) => {
+    async ({ query, format = "pdf", debug = false }) => {
         try {
             console.log(`[LibGen MCP] Searching for "${query}" in format: ${format}`);
             
@@ -35,8 +36,8 @@ server.tool(
                 return { content: [{ type: "text", text: `Unsupported format: ${format}. Currently only pdf and epub are supported.` }] };
             }
             
-            // STEP 1: Search for the book
-            const searchUrl = `https://libgen.is/search.php?req=${encodeURIComponent(query)}&view=simple&res=25&phrase=1&column=def`;
+            // STEP 1: Search for the book with exact URL pattern from user example
+            const searchUrl = `https://libgen.is/search.php?req=${encodeURIComponent(query)}&open=0&res=25&view=simple&phrase=1&column=def`;
             console.log(`[LibGen MCP] Searching at URL: ${searchUrl}`);
             
             const response = await axios.get(searchUrl);
@@ -45,36 +46,93 @@ server.tool(
             // Find all book rows in the search results table
             const bookRows = $('table.c tr:not(:first-child)');
             if (bookRows.length === 0) {
+                const debugInfo = debug ? {
+                    searchUrl,
+                    htmlSnippet: $.html().substring(0, 1000) + '...',
+                    message: 'No table rows found matching the selector pattern'
+                } : null;
+                
                 console.log(`[LibGen MCP] No search results found for "${query}"`);
-                return { content: [{ type: "text", text: `No results found for "${query}".` }] };
+                return { 
+                    content: [{ 
+                        type: "text", 
+                        text: debug 
+                            ? `No results found for "${query}".\n\nDebug Info: ${JSON.stringify(debugInfo, null, 2)}` 
+                            : `No results found for "${query}".` 
+                    }] 
+                };
             }
             
-            // Extract the first book's data
-            const firstBookRow = bookRows.first();
-            const bookTitle = firstBookRow.find('td:nth-child(3) a').text().trim();
-            const bookAuthor = firstBookRow.find('td:nth-child(2) a').text().trim();
-            const bookId = firstBookRow.find('td:nth-child(1)').text().trim();
+            // Get ALL book results to let the LLM choose
+            const books = [];
+            bookRows.each((index, row) => {
+                if (index < 5) { // Limit to first 5 books for practical reasons
+                    const $row = $(row);
+                    const id = $row.find('td:nth-child(1)').text().trim();
+                    const author = $row.find('td:nth-child(2)').text().trim();
+                    const titleEl = $row.find('td:nth-child(3) a');
+                    const title = titleEl.text().trim();
+                    const md5 = titleEl.attr('href')?.match(/md5=([A-F0-9]+)/i)?.[1] || '';
+                    const year = $row.find('td:nth-child(5)').text().trim();
+                    const pages = $row.find('td:nth-child(6)').text().trim();
+                    const language = $row.find('td:nth-child(7)').text().trim();
+                    const size = $row.find('td:nth-child(8)').text().trim();
+                    const extension = $row.find('td:nth-child(9)').text().trim();
+                    
+                    if (title && md5) {
+                        books.push({
+                            id,
+                            md5,
+                            title,
+                            author,
+                            year,
+                            pages,
+                            language,
+                            size,
+                            extension
+                        });
+                    }
+                }
+            });
             
-            console.log(`[LibGen MCP] Found book: "${bookTitle}" by ${bookAuthor} (ID: ${bookId})`);
-            
-            // STEP 2: Navigate to the book details page
-            const bookPageUrl = firstBookRow.find('td:nth-child(3) a').attr('href');
-            if (!bookPageUrl) {
-                console.log(`[LibGen MCP] Could not find book page URL for "${bookTitle}"`);
-                return { content: [{ type: "text", text: `Found "${bookTitle}" but could not navigate to its details page.` }] };
+            // If debug mode is enabled, return all books for LLM to choose
+            if (debug) {
+                console.log(`[LibGen MCP] Returning ${books.length} book options to LLM for selection`);
+                return {
+                    content: [{
+                        type: "text",
+                        text: `Found ${books.length} books matching "${query}". Please choose one by ID or MD5 hash:\n\n${books.map(b => 
+                            `ID: ${b.id}, MD5: ${b.md5}\nTitle: ${b.title}\nAuthor: ${b.author}, Year: ${b.year}, Format: ${b.extension}, Size: ${b.size}\n`
+                        ).join('\n')}`
+                    }]
+                };
             }
             
-            // Construct the full URL if it's relative
-            const fullBookPageUrl = bookPageUrl.startsWith('http') ? bookPageUrl : `https://libgen.is/${bookPageUrl}`;
-            console.log(`[LibGen MCP] Navigating to book page: ${fullBookPageUrl}`);
+            // Otherwise, use the first book automatically
+            if (books.length === 0) {
+                console.log(`[LibGen MCP] Could not extract book information from search results`);
+                return { 
+                    content: [{ 
+                        type: "text", 
+                        text: `Found search results for "${query}" but could not extract book information.` 
+                    }] 
+                };
+            }
             
-            const bookPageResponse = await axios.get(fullBookPageUrl);
+            const selectedBook = books[0];
+            console.log(`[LibGen MCP] Selected book: "${selectedBook.title}" by ${selectedBook.author} (MD5: ${selectedBook.md5})`);
+            
+            // STEP 2: Navigate to the book details page using the specific URL pattern from user example
+            const bookPageUrl = `https://libgen.is/book/index.php?md5=${selectedBook.md5}`;
+            console.log(`[LibGen MCP] Navigating to book page: ${bookPageUrl}`);
+            
+            const bookPageResponse = await axios.get(bookPageUrl);
             const $bookPage = cheerio.load(bookPageResponse.data);
             
-            // STEP 3: Find the hyperlinked title on the book details page
-            console.log(`[LibGen MCP] Looking for title/download links on book page...`);
+            // STEP 3: Find the hyperlinked title on the book details page (using exact pattern from user example)
+            console.log(`[LibGen MCP] Looking for title links to mirror sites...`);
             
-            // Find all the links on the page
+            // Get all links and their details for debugging
             const allLinks = [];
             $bookPage('a').each((_, el) => {
                 const link = $bookPage(el);
@@ -85,110 +143,121 @@ server.tool(
                 }
             });
             
-            // Look for links that could lead to download pages
-            // First, try links with the book title or in a heading element
-            const titleLinks = allLinks.filter(link => {
-                return link.text.includes(bookTitle) || 
-                      ($bookPage(`a[href="${link.href}"]`).parent().is('h1, h2, h3')) ||
-                      (link.text.length > 15 && !link.href.includes('#'));
+            // Start debug data collection for potential error response
+            const debugData = {
+                bookUrl: bookPageUrl,
+                selectedBook: selectedBook,
+                allLinksFound: allLinks,
+                message: null
+            };
+            
+            // Search for links matching the pattern user showed: "<a href="http://books.ms/main/[MD5]">[Book Title]</a>"
+            // Example pattern 1: <a href="http://books.ms/main/96F997237D1FFFE83467F130C350F275">Atomic Habits: Tiny Changes, Remarkable Results</a>
+            // Example pattern 2: <a href="http://library.lol/main/[MD5]">Book Title</a>
+            let mirrorLinks = allLinks.filter(link => {
+                return (link.href.includes('/main/') && link.text.includes(selectedBook.title)) ||
+                       (link.href.includes('books.ms/main/') || link.href.includes('library.lol/main/'));
             });
             
-            // Second, look for links to known download mirrors
-            const mirrorLinks = allLinks.filter(link => {
-                return link.href.includes('library.lol') || 
-                       link.href.includes('libgen.li') || 
-                       link.href.includes('libgen.lc') ||
-                       link.href.includes('3lib.net') ||
-                       link.href.includes('booksc.') ||
-                       link.href.includes('cloudflare') ||
-                       link.href.includes('ipfs');
-            });
-            
-            // Try title links first, then mirror links
-            let possibleLinks = [...titleLinks, ...mirrorLinks];
-            
-            if (possibleLinks.length === 0) {
-                // Fall back to any link with download-related keywords
-                possibleLinks = allLinks.filter(link => {
-                    return link.href.includes('get') || 
-                           link.href.includes('download') || 
-                           link.text.toUpperCase() === 'GET' ||
-                           link.text.toUpperCase().includes('DOWNLOAD') ||
-                           link.text.includes('Mirror');
-                });
+            // If we didn't find specific mirror links, try matching by MD5 hash
+            if (mirrorLinks.length === 0) {
+                mirrorLinks = allLinks.filter(link => 
+                    link.href.toLowerCase().includes(selectedBook.md5.toLowerCase()) && 
+                    (link.text.length > 10 || link.text.toUpperCase() === 'GET')
+                );
             }
             
-            if (possibleLinks.length === 0) {
-                console.log(`[LibGen MCP] Could not find any suitable links on book page: ${fullBookPageUrl}`);
-                return { content: [{ type: "text", text: `Found book page for "${bookTitle}" (ID: ${bookId}), but could not find any suitable download links.` }] };
+            if (mirrorLinks.length === 0) {
+                // If still not found, collect all promising links
+                debugData.message = "No exact mirror links found. Here are all links on the page:";
+                
+                if (debug) {
+                    console.log(`[LibGen MCP] Could not find specific mirror links on book page: ${bookPageUrl}`);
+                    return { 
+                        content: [{ 
+                            type: "text", 
+                            text: `Found book page for "${selectedBook.title}" (MD5: ${selectedBook.md5}), but could not find the specific download mirror links.\n\nDebug Info: ${JSON.stringify(debugData, null, 2)}` 
+                        }] 
+                    };
+                } else {
+                    return { 
+                        content: [{ 
+                            type: "text", 
+                            text: `Found book page for "${selectedBook.title}", but could not find a direct download link.\n\nTo see all available links, try again with debug=true.` 
+                        }] 
+                    };
+                }
             }
             
-            // Use the first suitable link found
-            const downloadPageLink = possibleLinks[0];
-            console.log(`[LibGen MCP] Found link to download page: ${downloadPageLink.text} -> ${downloadPageLink.href}`);
+            // Use the first mirror link found
+            const mirrorLink = mirrorLinks[0];
+            console.log(`[LibGen MCP] Found mirror link: ${mirrorLink.text} -> ${mirrorLink.href}`);
             
-            // Ensure URL is absolute
-            const downloadPageUrl = downloadPageLink.href.startsWith('http') 
-                ? downloadPageLink.href 
-                : new URL(downloadPageLink.href, fullBookPageUrl).href;
-            
-            // STEP 4: Navigate to the download page
-            console.log(`[LibGen MCP] Navigating to download page: ${downloadPageUrl}`);
-            const downloadPageResponse = await axios.get(downloadPageUrl);
+            // STEP 4: Navigate to the download page (mirror site)
+            console.log(`[LibGen MCP] Navigating to download mirror: ${mirrorLink.href}`);
+            const downloadPageResponse = await axios.get(mirrorLink.href);
             const $downloadPage = cheerio.load(downloadPageResponse.data);
             
-            // STEP 5: Look for the GET button or other download links
-            console.log(`[LibGen MCP] Looking for GET button or download links...`);
+            // STEP 5: Look for the GET button (using exact pattern from user example)
+            console.log(`[LibGen MCP] Looking for GET button...`);
             
-            // First try to find 'GET' buttons (as seen in your screenshot)
+            // Example from user: <a href="https://download.books.ms/main/2274000/96f997237d1fffe83467f130c350f275/James%20Clear%20-%20Atomic%20Habits_%20Tiny%20Changes%2C%20Remarkable%20Results-Penguin%20Publishing%20Group%20%282018%29.epub">GET</a>
             const getButtons = [];
             $downloadPage('a').each((_, el) => {
                 const link = $downloadPage(el);
                 const href = link.attr('href');
                 const text = link.text().trim();
-                
                 if (href && text.toUpperCase() === 'GET') {
                     getButtons.push({ href, text });
                     console.log(`[LibGen MCP] Found GET button: ${href}`);
                 }
             });
             
-            // Then look for links with download keywords or file extensions
-            const downloadLinks = [];
+            // Collect all links on download page for debugging
+            const downloadPageLinks = [];
             $downloadPage('a').each((_, el) => {
                 const link = $downloadPage(el);
                 const href = link.attr('href');
                 const text = link.text().trim();
-                
-                if (href && (
-                    href.includes('.pdf') || 
-                    href.includes('.epub') || 
-                    href.includes('download') ||
-                    href.includes('get.php') ||
-                    href.includes('cloudflare') ||
-                    href.includes('ipfs')
-                )) {
-                    downloadLinks.push({ href, text });
-                    console.log(`[LibGen MCP] Found download link: ${text} -> ${href}`);
+                if (href) {
+                    downloadPageLinks.push({ href, text });
                 }
             });
             
-            // Combine all possible download links, prioritizing GET buttons
-            const allDownloadLinks = [...getButtons, ...downloadLinks];
+            const downloadDebugData = {
+                mirrorUrl: mirrorLink.href,
+                allLinksOnDownloadPage: downloadPageLinks,
+                getButtonsFound: getButtons,
+                pageContent: debug ? $downloadPage.html().substring(0, 2000) + '...' : null
+            };
             
-            if (allDownloadLinks.length === 0) {
-                console.log(`[LibGen MCP] No download links found on page: ${downloadPageUrl}`);
-                return { content: [{ type: "text", text: `Found download page for "${bookTitle}", but could not find any download links.` }] };
+            if (getButtons.length === 0) {
+                if (debug) {
+                    console.log(`[LibGen MCP] No GET buttons found on download page: ${mirrorLink.href}`);
+                    return {
+                        content: [{
+                            type: "text",
+                            text: `Found download page for "${selectedBook.title}", but could not find any GET buttons.\n\nDebug Info: ${JSON.stringify(downloadDebugData, null, 2)}`
+                        }]
+                    };
+                } else {
+                    return {
+                        content: [{
+                            type: "text",
+                            text: `Found download page for "${selectedBook.title}", but could not find the final download link.\n\nTo see all available links, try again with debug=true.`
+                        }]
+                    };
+                }
             }
             
-            // Use the first download link (prioritizing GET buttons)
-            const finalDownloadLink = allDownloadLinks[0];
-            console.log(`[LibGen MCP] Using download link: ${finalDownloadLink.text} -> ${finalDownloadLink.href}`);
+            // Use the first GET button
+            const downloadButton = getButtons[0];
+            console.log(`[LibGen MCP] Using GET button link: ${downloadButton.href}`);
             
             // Ensure the URL is absolute
-            const absoluteDownloadUrl = finalDownloadLink.href.startsWith('http')
-                ? finalDownloadLink.href
-                : new URL(finalDownloadLink.href, downloadPageUrl).href;
+            const absoluteDownloadUrl = downloadButton.href.startsWith('http')
+                ? downloadButton.href
+                : new URL(downloadButton.href, mirrorLink.href).href;
             
             // STEP 6: Download the file
             console.log(`[LibGen MCP] Downloading file from: ${absoluteDownloadUrl}`);
