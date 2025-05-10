@@ -95,6 +95,19 @@ server.tool(
             const $bookPage = cheerio.load(bookPageResponse.data);
 
             let downloadLink = null;
+            console.log(`[LibGen MCP] --- All links on book page ${bookPageUrl}: ---`);
+            const allLinks = [];
+            $bookPage('a').each((idx, el) => {
+                const linkElement = $bookPage(el);
+                const href = linkElement.attr('href');
+                const text = linkElement.text().trim();
+                if (href) { // Only log if href exists
+                    allLinks.push({ href, text });
+                    console.log(`[LibGen MCP] Link found: TEXT='${text}', HREF='${href}'`);
+                }
+            });
+            console.log(`[LibGen MCP] --- End of links on book page ${bookPageUrl} ---`);
+
             // Look for download links. This is highly variable across LibGen mirrors and page structures.
             // Common pattern on pages like library.lol/main/MD5... is a link inside an h2 under a div with id 'download'.
             // Or links containing 'get.php'.
@@ -136,7 +149,7 @@ server.tool(
             }
 
             if (!downloadLink) {
-                console.log(`[LibGen MCP] Could not find a direct download link on page: ${bookPageUrl}`);
+                console.log(`[LibGen MCP] Could not find a direct download link on page: ${bookPageUrl}. Searched ${allLinks.length} links.`);
                 return { content: [{ type: "text", text: `Found book page for "${bookTitle}", but could not find a direct download link.` }] };
             }
 
