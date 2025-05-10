@@ -13,7 +13,7 @@ import path from "path";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.5",
+    version: "1.0.6",
 });
 
 // Add a tool to search and download books
@@ -336,17 +336,7 @@ server.tool(
     }
 );
 
-// Add a simple greeting resource for testing
-server.resource(
-    "greeting",
-    new ResourceTemplate("greeting://{name}", { list: undefined }),
-    async (uri, { name }) => ({
-        contents: [{
-            uri: uri.href,
-            text: `Hello, ${name}!`
-        }]
-    })
-);
+// No resources defined - we're just using tools
 
 async function main() {
     console.log("[LibGen MCP] Server starting...");
