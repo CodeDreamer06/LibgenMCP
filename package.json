@@ -1,6 +1,6 @@
 {
   "name": "libgen-mcp-server",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "MCP server to search and download books from LibGen",
   "main": "index.js",
   "type": "module",

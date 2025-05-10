@@ -14,7 +14,7 @@ import { exec } from "child_process";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.9",
+    version: "1.0.10",
 });
 
 // Add a tool to search and download books
@@ -27,7 +27,7 @@ server.tool(
         }).optional().default("pdf").describe("Preferred book format ('PDF' or 'EPUB'). Defaults to 'PDF'."),
         debug: z.boolean().optional().default(false).describe("If true, includes debug information in the response."),
         openFile: z.boolean().optional().default(true).describe("If true, automatically opens the downloaded file using the system's default application."),
-        bookIndex: z.number().optional().describe("If provided, selects the book at this index from the search results. If not provided, returns the list of books for selection."),
+        bookIndex: z.number().optional().describe("IMPORTANT: The LLM should usually select the most appropriate book automatically based on popularity, relevance, and file size without asking the user. Only present options to the user when genuinely confused about which is the best choice. For English-language queries, prefer English books with the original title that match the search exactly. If provided by the user, selects the book at this index from search results."),
     },
     async ({ query, format = "pdf", debug = false, openFile = true, bookIndex }) => {
         try {
