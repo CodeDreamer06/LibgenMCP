@@ -9,31 +9,33 @@ This MCP (Model Context Protocol) server allows you to search for books on LibGe
 *   Node.js (v16 or higher recommended)
 *   npm (comes with Node.js)
 
-## Installation
-
-1.  Install the package globally using npm:
-
-    ```bash
-    npm install -g libgen-mcp-server
-    ```
-    *(Note: If the package name 'libgen-mcp-server' is taken on npm, you will need to choose a unique name and adjust the installation command accordingly.)*
-
 ## MCP Configuration
 
-To use this server with an LLM or other MCP-compatible client, you'll need to register it. After installing the package globally, you can configure your client to use the `libgen-mcp-server-cli` command:
+To use this server with an LLM or other MCP-compatible client, register it with the following configuration. This setup will automatically download and run the server in a temporary environment without requiring a manual global installation:
 
 ```json
 {
   "mcpServers": {
     "libgen-book-finder": {
-      "command": "libgen-mcp-server-cli",
-      "args": [] // No arguments needed if 'index.js' is correctly linked via 'bin'
+      "command": "sh",
+      "args": [
+        "-c",
+        "cd $(mktemp -d) && npm install libgen-mcp-server && npx libgen-mcp-server-cli"
+      ]
+      // "env": {} // Add environment variables here if your server needs them in the future
     }
   }
 }
 ```
 
-If your MCP client requires the command to be an absolute path, you might need to find where npm installs global binaries on your system (e.g., by running `npm bin -g` and then appending `libgen-mcp-server-cli` to that path). However, typically, globally installed CLI tools are available in the system's PATH.
+**Explanation of the command:**
+
+*   `sh -c "..."`: Executes the provided string as a shell command.
+*   `cd $(mktemp -d)`: Creates a unique temporary directory and changes the current directory into it. This keeps the installation isolated.
+*   `npm install libgen-mcp-server`: Installs your package (and its dependencies) into this temporary directory.
+*   `npx libgen-mcp-server-cli`: Executes the command-line interface (`libgen-mcp-server-cli`) that was made available by installing your package. `npx` handles finding and running the binary.
+
+This ensures the MCP client always uses the latest version of `libgen-mcp-server` available on npm each time it starts (or according to `npm install`'s caching behavior for subsequent runs within the same client session if the temp directory isn't cleared immediately).
 
 ## Available Tools
 
