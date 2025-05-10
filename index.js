@@ -14,7 +14,7 @@ import { exec } from "child_process";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.10",
+    version: "1.0.11",
 });
 
 // Add a tool to search and download books
@@ -323,9 +323,10 @@ server.tool(
             
             return {
                 content: [
-                    { type: "text", text: `✅ Successfully downloaded "${selectedBook.title}" by ${selectedBook.author} in ${fileExt.toUpperCase()} format.\n${
-                        fileOpened ? "✓ The file has been opened with your default application." : `Saved to: ${filePath}`
-                    }` }
+                    { type: "text", text: fileOpened 
+                        ? `Opening "${selectedBook.title.split('[')[0].trim()}" by ${selectedBook.author.split(',')[0].trim()}...` 
+                        : `Downloaded "${selectedBook.title.split('[')[0].trim()}" by ${selectedBook.author.split(',')[0].trim()} to: ${filePath}` 
+                    }
                 ]
             };
             
