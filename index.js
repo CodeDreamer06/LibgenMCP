@@ -10,16 +10,10 @@ import fse from "fs-extra";
 import os from "os";
 import path from "path";
 
-// Helper function to sanitize filenames (replace invalid chars with underscore)
-const sanitizeFilename = (name) => {
-    if (!name || typeof name !== 'string') return 'untitled';
-    return name.replace(/[^a-z0-9_.-]/gi, '_').replace(/\s+/g, '_');
-};
-
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.0",
+    version: "1.0.4",
 });
 
 // Add a tool to search and download books
@@ -31,193 +25,260 @@ server.tool(
             message: "Format must be 'PDF' or 'EPUB' (case-insensitive).",
         }).optional().default("pdf").describe("Preferred book format ('PDF' or 'EPUB'). Defaults to 'PDF'."),
     },
-    async ({ query, format }) => {
-        const preferredFormat = format.toLowerCase();
-        console.log(`[LibGen MCP] Searching for "${query}" in format "${preferredFormat}"...`);
-
+    async ({ query, format = "pdf" }) => {
         try {
-            // Step 1: Search LibGen
-            // Note: LibGen URLs and HTML structure can change, making this scraper fragile.
-            const searchUrl = `http://libgen.is/search.php?req=${encodeURIComponent(query)}&lg_topic=libgen&open=0&view=simple&res=25&phrase=1&column=def`;
+            console.log(`[LibGen MCP] Searching for "${query}" in format: ${format}`);
             
-            console.log(`[LibGen MCP] Fetching search results from: ${searchUrl}`);
-            const searchResponse = await axios.get(searchUrl, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
-            });
-            const $search = cheerio.load(searchResponse.data);
-
-            let bookPageUrl = null;
-            let bookTitle = query; // Fallback title
-
-            // Attempt to find book rows. Selectors might need adjustment based on current LibGen HTML.
-            // Common tables are 'table.c' or the main results table (often largest with border=1)
-            const bookRows = $search('table.c tr:has(td:nth-child(9))'); // Assumes 9th column is extension
-            console.log(`[LibGen MCP] Found ${bookRows.length} potential book rows in search results.`);
-
-            for (let i = 0; i < bookRows.length; i++) {
-                const row = bookRows.eq(i);
-                const rowHtml = row.html();
-                if (!rowHtml) continue; 
-
-                // Load row HTML into a new Cheerio instance to scope selectors correctly
-                const $row = cheerio.load(rowHtml, null, false); 
-                
-                const extension = $row('td:nth-of-type(9)').text().trim().toLowerCase();
-                // Titles in LibGen search results often have an ID in the <a> tag, or are in the 3rd column.
-                const titleLinkElement = $row('td:nth-of-type(3) a[id]').first(); 
-                let currentBookPageUrl = titleLinkElement.attr('href');
-                const currentBookTitle = titleLinkElement.text().trim() || $row('td:nth-of-type(3)').text().split('\n')[0].trim();
-
-                if (currentBookPageUrl && !currentBookPageUrl.startsWith('http')) {
-                    currentBookPageUrl = `http://libgen.is/${currentBookPageUrl.replace(/^\.\//, '')}`;
-                }
-
-                console.log(`[LibGen MCP] Checking row: Ext: "${extension}", Title: "${currentBookTitle}", URL: "${currentBookPageUrl}"`);
-
-                if (extension === preferredFormat && currentBookPageUrl) {
-                    bookPageUrl = currentBookPageUrl;
-                    if (currentBookTitle) bookTitle = currentBookTitle;
-                    console.log(`[LibGen MCP] Found matching book: "${bookTitle}", Format: ${extension}, Page URL: ${bookPageUrl}`);
-                    break; 
-                }
+            // Normalize the format to lowercase
+            format = format.toLowerCase();
+            if (!["pdf", "epub"].includes(format)) {
+                return { content: [{ type: "text", text: `Unsupported format: ${format}. Currently only pdf and epub are supported.` }] };
             }
-
+            
+            // STEP 1: Search for the book
+            const searchUrl = `https://libgen.is/search.php?req=${encodeURIComponent(query)}&view=simple&res=25&phrase=1&column=def`;
+            console.log(`[LibGen MCP] Searching at URL: ${searchUrl}`);
+            
+            const response = await axios.get(searchUrl);
+            const $ = cheerio.load(response.data);
+            
+            // Find all book rows in the search results table
+            const bookRows = $('table.c tr:not(:first-child)');
+            if (bookRows.length === 0) {
+                console.log(`[LibGen MCP] No search results found for "${query}"`);
+                return { content: [{ type: "text", text: `No results found for "${query}".` }] };
+            }
+            
+            // Extract the first book's data
+            const firstBookRow = bookRows.first();
+            const bookTitle = firstBookRow.find('td:nth-child(3) a').text().trim();
+            const bookAuthor = firstBookRow.find('td:nth-child(2) a').text().trim();
+            const bookId = firstBookRow.find('td:nth-child(1)').text().trim();
+            
+            console.log(`[LibGen MCP] Found book: "${bookTitle}" by ${bookAuthor} (ID: ${bookId})`);
+            
+            // STEP 2: Navigate to the book details page
+            const bookPageUrl = firstBookRow.find('td:nth-child(3) a').attr('href');
             if (!bookPageUrl) {
-                console.log(`[LibGen MCP] No book found matching query "${query}" and format "${preferredFormat}" on the first search results page.`);
-                return { content: [{ type: "text", text: `Could not find "${query}" in ${preferredFormat.toUpperCase()} format on LibGen's first results page.` }] };
+                console.log(`[LibGen MCP] Could not find book page URL for "${bookTitle}"`);
+                return { content: [{ type: "text", text: `Found "${bookTitle}" but could not navigate to its details page.` }] };
             }
-
-            // Step 2: Go to the book's page and find the direct download link
-            console.log(`[LibGen MCP] Fetching book page: ${bookPageUrl}`);
-            const bookPageResponse = await axios.get(bookPageUrl, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
-            });
+            
+            // Construct the full URL if it's relative
+            const fullBookPageUrl = bookPageUrl.startsWith('http') ? bookPageUrl : `https://libgen.is/${bookPageUrl}`;
+            console.log(`[LibGen MCP] Navigating to book page: ${fullBookPageUrl}`);
+            
+            const bookPageResponse = await axios.get(fullBookPageUrl);
             const $bookPage = cheerio.load(bookPageResponse.data);
-
-            let downloadLink = null;
-            console.log(`[LibGen MCP] --- All links on book page ${bookPageUrl}: ---`);
+            
+            // STEP 3: Find the hyperlinked title on the book details page
+            console.log(`[LibGen MCP] Looking for title/download links on book page...`);
+            
+            // Find all the links on the page
             const allLinks = [];
-            $bookPage('a').each((idx, el) => {
-                const linkElement = $bookPage(el);
-                const href = linkElement.attr('href');
-                const text = linkElement.text().trim();
-                if (href) { // Only log if href exists
+            $bookPage('a').each((_, el) => {
+                const link = $bookPage(el);
+                const href = link.attr('href');
+                const text = link.text().trim();
+                if (href) {
                     allLinks.push({ href, text });
-                    console.log(`[LibGen MCP] Link found: TEXT='${text}', HREF='${href}'`);
                 }
             });
-            console.log(`[LibGen MCP] --- End of links on book page ${bookPageUrl} ---`);
-
-            // Look for download links. This is highly variable across LibGen mirrors and page structures.
-            // Common pattern on pages like library.lol/main/MD5... is a link inside an h2 under a div with id 'download'.
-            // Or links containing 'get.php'.
-            const libraryLolLink = $bookPage('#download h2 a, a[href*="get.php"]').first();
-            if (libraryLolLink.length > 0) {
-                downloadLink = libraryLolLink.attr('href');
-                console.log(`[LibGen MCP] Found download link (library.lol style): ${downloadLink}`);
-            }
-
-            // Generic fallback: find links with "GET" text or common mirror domains
-            if (!downloadLink) {
-                console.log("[LibGen MCP] library.lol style link not found, trying generic fallback...");
-                $bookPage('a').each((idx, el) => {
-                    const linkElement = $bookPage(el);
-                    const href = linkElement.attr('href');
-                    const text = linkElement.text().trim().toUpperCase();
-                    if (href && (text === 'GET' || /libgen\.(lc|gs|rs|st|rocks|click)|download\.library\.lol|b-ok\.org/i.test(href))) {
-                         // Prefer links that seem to point directly to files or known download hosts
-                        if (href.match(/\.(pdf|epub)$/i) || text === 'GET' || href.includes('get.php')) {
-                           downloadLink = href;
-                           console.log(`[LibGen MCP] Found download link (generic GET/mirror): ${downloadLink} with text "${text}"`);
-                           return false; // Stop iterating
-                        }
-                    }
+            
+            // Look for links that could lead to download pages
+            // First, try links with the book title or in a heading element
+            const titleLinks = allLinks.filter(link => {
+                return link.text.includes(bookTitle) || 
+                      ($bookPage(`a[href="${link.href}"]`).parent().is('h1, h2, h3')) ||
+                      (link.text.length > 15 && !link.href.includes('#'));
+            });
+            
+            // Second, look for links to known download mirrors
+            const mirrorLinks = allLinks.filter(link => {
+                return link.href.includes('library.lol') || 
+                       link.href.includes('libgen.li') || 
+                       link.href.includes('libgen.lc') ||
+                       link.href.includes('3lib.net') ||
+                       link.href.includes('booksc.') ||
+                       link.href.includes('cloudflare') ||
+                       link.href.includes('ipfs');
+            });
+            
+            // Try title links first, then mirror links
+            let possibleLinks = [...titleLinks, ...mirrorLinks];
+            
+            if (possibleLinks.length === 0) {
+                // Fall back to any link with download-related keywords
+                possibleLinks = allLinks.filter(link => {
+                    return link.href.includes('get') || 
+                           link.href.includes('download') || 
+                           link.text.toUpperCase() === 'GET' ||
+                           link.text.toUpperCase().includes('DOWNLOAD') ||
+                           link.text.includes('Mirror');
                 });
             }
             
-            if (!downloadLink) {
-                 // Last resort: try any link that has the book title in it and the correct extension (less reliable)
-                $bookPage('a').each((idx, el) => {
-                    const linkElement = $bookPage(el);
-                    const href = linkElement.attr('href');
-                    if (href && href.toLowerCase().includes(preferredFormat) && (href.toLowerCase().includes(sanitizeFilename(bookTitle).toLowerCase().substring(0,5)) || bookTitle.split(' ').some(word => href.toLowerCase().includes(word.toLowerCase())) ) ){
-                        downloadLink = href;
-                        console.log(`[LibGen MCP] Found download link (fallback filename match): ${downloadLink}`);
-                        return false;
-                    }
-                });
-            }
-
-            if (!downloadLink) {
-                console.log(`[LibGen MCP] Could not find a direct download link on page: ${bookPageUrl}. Searched ${allLinks.length} links.`);
-                return { content: [{ type: "text", text: `Found book page for "${bookTitle}", but could not find a direct download link.` }] };
-            }
-
-            // Ensure download link is absolute
-            if (downloadLink && !downloadLink.startsWith('http')) {
-                const bookPageURLObj = new URL(bookPageUrl);
-                downloadLink = `${bookPageURLObj.protocol}//${bookPageURLObj.host}${downloadLink.startsWith('/') ? '' : '/'}${downloadLink}`;
-                console.log(`[LibGen MCP] Resolved relative download link to: ${downloadLink}`);
+            if (possibleLinks.length === 0) {
+                console.log(`[LibGen MCP] Could not find any suitable links on book page: ${fullBookPageUrl}`);
+                return { content: [{ type: "text", text: `Found book page for "${bookTitle}" (ID: ${bookId}), but could not find any suitable download links.` }] };
             }
             
-            // Step 3: Download the book
-            const downloadsPath = path.join(os.homedir(), 'Downloads');
-            await fse.ensureDir(downloadsPath);
+            // Use the first suitable link found
+            const downloadPageLink = possibleLinks[0];
+            console.log(`[LibGen MCP] Found link to download page: ${downloadPageLink.text} -> ${downloadPageLink.href}`);
             
-            const safeBookTitle = sanitizeFilename(bookTitle);
-            const fileName = `${safeBookTitle || 'downloaded_book'}.${preferredFormat}`;
-            const filePath = path.join(downloadsPath, fileName);
-
-            console.log(`[LibGen MCP] Attempting to download from: ${downloadLink} to ${filePath}`);
+            // Ensure URL is absolute
+            const downloadPageUrl = downloadPageLink.href.startsWith('http') 
+                ? downloadPageLink.href 
+                : new URL(downloadPageLink.href, fullBookPageUrl).href;
             
-            const writer = fs.createWriteStream(filePath);
-            const downloadResponse = await axios({
+            // STEP 4: Navigate to the download page
+            console.log(`[LibGen MCP] Navigating to download page: ${downloadPageUrl}`);
+            const downloadPageResponse = await axios.get(downloadPageUrl);
+            const $downloadPage = cheerio.load(downloadPageResponse.data);
+            
+            // STEP 5: Look for the GET button or other download links
+            console.log(`[LibGen MCP] Looking for GET button or download links...`);
+            
+            // First try to find 'GET' buttons (as seen in your screenshot)
+            const getButtons = [];
+            $downloadPage('a').each((_, el) => {
+                const link = $downloadPage(el);
+                const href = link.attr('href');
+                const text = link.text().trim();
+                
+                if (href && text.toUpperCase() === 'GET') {
+                    getButtons.push({ href, text });
+                    console.log(`[LibGen MCP] Found GET button: ${href}`);
+                }
+            });
+            
+            // Then look for links with download keywords or file extensions
+            const downloadLinks = [];
+            $downloadPage('a').each((_, el) => {
+                const link = $downloadPage(el);
+                const href = link.attr('href');
+                const text = link.text().trim();
+                
+                if (href && (
+                    href.includes('.pdf') || 
+                    href.includes('.epub') || 
+                    href.includes('download') ||
+                    href.includes('get.php') ||
+                    href.includes('cloudflare') ||
+                    href.includes('ipfs')
+                )) {
+                    downloadLinks.push({ href, text });
+                    console.log(`[LibGen MCP] Found download link: ${text} -> ${href}`);
+                }
+            });
+            
+            // Combine all possible download links, prioritizing GET buttons
+            const allDownloadLinks = [...getButtons, ...downloadLinks];
+            
+            if (allDownloadLinks.length === 0) {
+                console.log(`[LibGen MCP] No download links found on page: ${downloadPageUrl}`);
+                return { content: [{ type: "text", text: `Found download page for "${bookTitle}", but could not find any download links.` }] };
+            }
+            
+            // Use the first download link (prioritizing GET buttons)
+            const finalDownloadLink = allDownloadLinks[0];
+            console.log(`[LibGen MCP] Using download link: ${finalDownloadLink.text} -> ${finalDownloadLink.href}`);
+            
+            // Ensure the URL is absolute
+            const absoluteDownloadUrl = finalDownloadLink.href.startsWith('http')
+                ? finalDownloadLink.href
+                : new URL(finalDownloadLink.href, downloadPageUrl).href;
+            
+            // STEP 6: Download the file
+            console.log(`[LibGen MCP] Downloading file from: ${absoluteDownloadUrl}`);
+            const fileResponse = await axios({
                 method: 'get',
-                url: downloadLink,
-                responseType: 'stream',
-                timeout: 30000, // 30 second timeout for download request
-                headers: { 
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                    'Referer': bookPageUrl // Adding Referer might help with some download servers
-                }
+                url: absoluteDownloadUrl,
+                responseType: 'arraybuffer'
             });
-
-            downloadResponse.data.pipe(writer);
-
-            return new Promise((resolve, reject) => {
-                writer.on('finish', () => {
-                    console.log(`[LibGen MCP] Successfully downloaded "${fileName}" to ${downloadsPath}`);
-                    resolve({ content: [{ type: "text", text: `Successfully downloaded "${bookTitle}" as ${fileName} to your Downloads folder.` }] });
-                });
-                writer.on('error', (err) => {
-                    console.error('[LibGen MCP] File write error:', err);
-                    fs.unlink(filePath, (unlinkErr) => { if (unlinkErr) console.error('[LibGen MCP] Error deleting partial file:', unlinkErr); });
-                    reject(new Error(`Failed to write file: ${err.message}`));
-                });
-                downloadResponse.data.on('error', (err) => {
-                    console.error('[LibGen MCP] Download stream error:', err);
-                    writer.end();
-                    fs.unlink(filePath, (unlinkErr) => { if (unlinkErr) console.error('[LibGen MCP] Error deleting partial file on stream error:', unlinkErr); });
-                    reject(new Error(`Failed to download book (stream error): ${err.message}`));
-                });
-            });
-
+            
+            // Determine file extension from content-type or URL
+            let fileExt = format;
+            const contentType = fileResponse.headers['content-type'];
+            if (contentType && contentType.includes('application/pdf')) {
+                fileExt = 'pdf';
+            } else if (contentType && contentType.includes('application/epub')) {
+                fileExt = 'epub';
+            } else if (absoluteDownloadUrl.includes('.pdf')) {
+                fileExt = 'pdf';
+            } else if (absoluteDownloadUrl.includes('.epub')) {
+                fileExt = 'epub';
+            }
+            
+            // Create a safe filename
+            const safeTitle = bookTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
+            const safeAuthor = bookAuthor ? bookAuthor.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50) : 'Unknown';
+            const fileName = `${safeTitle}_by_${safeAuthor}.${fileExt}`;
+            
+            // Save to user's Downloads folder
+            const downloadDir = `${os.homedir()}/Downloads`;
+            await fse.ensureDir(downloadDir);
+            const filePath = `${downloadDir}/${fileName}`;
+            
+            // Write the file
+            fs.writeFileSync(filePath, Buffer.from(fileResponse.data));
+            console.log(`[LibGen MCP] File saved successfully to: ${filePath}`);
+            
+            return {
+                content: [
+                    { type: "text", text: `✅ Successfully downloaded "${bookTitle}" by ${bookAuthor} in ${fileExt.toUpperCase()} format.\nSaved to: ${filePath}` }
+                ]
+            };
+            
         } catch (error) {
-            console.error('[LibGen MCP] Error in searchAndDownloadBook:', error.message);
+            console.error('[LibGen MCP] Error:', error.message);
             if (error.response) {
                 console.error('[LibGen MCP] Error response status:', error.response.status);
             }
-            if (axios.isAxiosError(error) && (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT')) {
-                return { content: [{ type: "text", text: `Failed to connect to LibGen or download source. The site might be down or inaccessible. (${error.message})` }] };
+            
+            // Special handling for common errors
+            if (axios.isAxiosError(error)) {
+                if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+                    return { 
+                        content: [{ 
+                            type: "text", 
+                            text: `Failed to connect to LibGen. The site might be down or inaccessible. (${error.message})` 
+                        }] 
+                    };
+                }
+                
+                if (error.response && error.response.status === 404) {
+                    return { 
+                        content: [{ 
+                            type: "text", 
+                            text: `The requested page or file was not found. (HTTP 404)` 
+                        }] 
+                    };
+                }
             }
-            // Ensure the error object passed to MCP is serializable and simple
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            return { content: [{ type: "text", text: `An error occurred: ${errorMessage}. Check server console for details.` }] };
+            
+            return {
+                content: [
+                    { type: "text", text: `An error occurred: ${error.message}` }
+                ]
+            };
         }
     }
 );
 
-// Start receiving messages on stdin and sending messages on stdout
+// Add a simple greeting resource for testing
+server.resource(
+    "greeting",
+    new ResourceTemplate("greeting://{name}", { list: undefined }),
+    async (uri, { name }) => ({
+        contents: [{
+            uri: uri.href,
+            text: `Hello, ${name}!`
+        }]
+    })
+);
+
 async function main() {
     console.log("[LibGen MCP] Server starting...");
     const transport = new StdioServerTransport();
