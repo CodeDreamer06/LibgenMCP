@@ -13,7 +13,7 @@ import path from "path";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.6",
+    version: "1.0.7",
 });
 
 // Add a tool to search and download books
@@ -281,8 +281,8 @@ server.tool(
             }
             
             // Create a safe filename
-            const safeTitle = bookTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
-            const safeAuthor = bookAuthor ? bookAuthor.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50) : 'Unknown';
+            const safeTitle = selectedBook.title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
+            const safeAuthor = selectedBook.author ? selectedBook.author.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50) : 'Unknown';
             const fileName = `${safeTitle}_by_${safeAuthor}.${fileExt}`;
             
             // Save to user's Downloads folder
@@ -296,7 +296,7 @@ server.tool(
             
             return {
                 content: [
-                    { type: "text", text: `✅ Successfully downloaded "${bookTitle}" by ${bookAuthor} in ${fileExt.toUpperCase()} format.\nSaved to: ${filePath}` }
+                    { type: "text", text: `✅ Successfully downloaded "${selectedBook.title}" by ${selectedBook.author} in ${fileExt.toUpperCase()} format.\nSaved to: ${filePath}` }
                 ]
             };
             
