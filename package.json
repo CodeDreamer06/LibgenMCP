@@ -5,7 +5,7 @@
   "main": "index.js",
   "type": "module",
   "bin": {
-    "libgen-mcp-server-cli": "./index.js"
+    "libgen-mcp-server-cli": "index.js"
   },
   "scripts": {
     "start": "node index.js",
