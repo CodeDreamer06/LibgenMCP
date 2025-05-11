@@ -20,7 +20,7 @@ const server = new McpServer({
 server.tool(
     "searchAndDownloadBook",
     {
-        query: z.string().min(1).describe("The search query for the book. IMPORTANT: This tool is very picky, so enter as few words as possible (just the book title). The search has no fuzzy matching capabilities, so complex queries with author names or other details will likely fail."),
+        query: z.string().min(1).describe("The search query for the book. IMPORTANT: This tool is very picky, so enter as few words as possible (just the book title). The search has no fuzzy matching capabilities, so complex queries with author names or other details will likely fail. However, if the direct title isn't available, try including the author's name beside the title, without using a connecting word like 'by'. Use the main part of the author's name, not the full name. This is because this tool always only returns the first page of the search results, so if the title isn't found, it doesn't mean the book is not available."),
         searchDomain: z.enum(['general', 'fiction']).optional().default('general').describe("The domain to search: 'general' (non-fiction, textbooks) or 'fiction'. Defaults to 'general'."),
         format: z.string().optional().default("any").describe("Preferred book format (e.g., 'PDF', 'EPUB', 'MOBI', 'any'). Case-insensitive. Defaults to 'any' to show all available formats."),
         debug: z.boolean().optional().default(false).describe("If true, includes debug information in the response."),
