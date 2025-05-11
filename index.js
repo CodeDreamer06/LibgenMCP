@@ -13,7 +13,7 @@ import { exec } from "child_process";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.17",
+    version: "1.0.16",
 });
 
 // Add a tool to search and download books
@@ -28,7 +28,6 @@ server.tool(
         bookIndex: z.number().optional().describe("IMPORTANT: The LLM should usually select the most appropriate book automatically based on popularity, relevance, and file size without asking the user. Only present options to the user when genuinely confused about which is the best choice. For English-language queries, prefer English books with the original title that match the search exactly. If provided by the user, selects the book at this index from search results."),
     },
     async ({ query, searchDomain = 'general', format = "any", debug = false, openFile = true, bookIndex }) => {
-        let absoluteDownloadUrl = ''; // Declare here to be accessible in catch block
         try {
             console.log(`[LibGen MCP] Searching for "${query}", Domain: ${searchDomain}, Format: ${format}`);
             
@@ -289,8 +288,7 @@ server.tool(
                  return { content: [{ type: "text", text: `Could not resolve a final download link for "${selectedBook.title}".` }], debugInfo: debug ? { selectedBook, downloadSourcePageUrl } : {} };
             }
 
-            // absoluteDownloadUrl is assigned here, before the actual download attempt.
-            absoluteDownloadUrl = finalDownloadLink.startsWith('http')
+            const absoluteDownloadUrl = finalDownloadLink.startsWith('http')
                 ? finalDownloadLink
                 : new URL(finalDownloadLink, downloadSourcePageUrl).href;
             
@@ -370,11 +368,6 @@ server.tool(
                 } else if (error.response) {
                     errorMessage = `HTTP error ${error.response.status} while accessing ${error.config?.url}. (${error.message})`;
                 }
-            }
-
-            // Add fallback URL if available and in download phase
-            if (bookIndex !== undefined && absoluteDownloadUrl) {
-                errorMessage += `\\n\\nAs a fallback, if the download failed, you might be able to download the file directly from: ${absoluteDownloadUrl}`;
             }
             
             return {
