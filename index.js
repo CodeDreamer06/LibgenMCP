@@ -13,7 +13,7 @@ import { exec } from "child_process";
 // Create an MCP server
 const server = new McpServer({
     name: "LibGen Book Finder",
-    version: "1.0.15",
+    version: "1.0.16",
 });
 
 // Add a tool to search and download books
