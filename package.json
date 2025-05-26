@@ -1,11 +1,11 @@
 {
-  "name": "libgen-mcp-server",
-  "version": "1.0.18",
-  "description": "MCP server to search and download books from LibGen",
+  "name": "book-downloader-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server to search and download books using Anna's Archive API",
   "main": "index.js",
   "type": "module",
   "bin": {
-    "libgen-mcp-server-cli": "index.js"
+    "book-downloader-mcp-server-cli": "index.js"
   },
   "scripts": {
     "start": "node index.js",
